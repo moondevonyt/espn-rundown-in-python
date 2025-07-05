@@ -20,6 +20,9 @@ import threading
 import sys
 from datetime import datetime, timedelta
 import re
+import subprocess
+import platform
+import select
 
 # 🚀 Moon Dev's Daily Coding Projects 🚀
 PROJECTS = [
@@ -34,6 +37,10 @@ PROJECTS = [
 # ⏰ Default time per project (minutes)
 DEFAULT_MINUTES = 60
 
+# 🔊 Sound configuration
+SOUND_ENABLED = False
+SOUND_FILE_PATH = "/Users/md/Dropbox/dev/github/Untitled/sounds/yahoooo.wav"
+
 class MoonDevRundown:
     def __init__(self, minutes_per_project=DEFAULT_MINUTES, starting_project=None):
         self.minutes_per_project = minutes_per_project
@@ -43,6 +50,8 @@ class MoonDevRundown:
         self.is_running = False
         self.timer_thread = None
         self.should_update = True
+        self.last_time_remaining = None
+        self.auto_advance_flag = False
         
         # Randomize project order
         random.shuffle(self.projects)
@@ -51,16 +60,42 @@ class MoonDevRundown:
         if starting_project:
             self.override_starting_project(starting_project)
     
+    def play_sound(self):
+        """🔊 Play completion sound for Moon Dev"""
+        if not SOUND_ENABLED:
+            return
+            
+        try:
+            if platform.system() == "Darwin":  # macOS
+                subprocess.run(["afplay", SOUND_FILE_PATH], check=False)
+            elif platform.system() == "Windows":
+                subprocess.run(["powershell", "-c", f"(New-Object Media.SoundPlayer '{SOUND_FILE_PATH}').PlaySync()"], check=False)
+            else:  # Linux
+                subprocess.run(["aplay", SOUND_FILE_PATH], check=False)
+        except:
+            pass  # Silently fail if sound can't play
+    
     def override_starting_project(self, search_term):
         """🔍 Moon Dev's project search and override system"""
-        search_term = search_term.lower()
+        search_term_lower = search_term.lower()
         
+        # First, try to find a match in existing projects
         for i, project in enumerate(self.projects):
-            if search_term in project.lower():
+            if search_term_lower in project.lower():
                 # Move match to the beginning
                 self.projects.pop(i)
                 self.projects.insert(0, project)
-                break
+                print(f"🎯 Moon Dev found matching project: {project}! 🚀")
+                return
+        
+        # If no match found, treat as new task
+        print(f"🆕 Moon Dev adding new task: {search_term}! 🌟")
+        self.projects.insert(0, search_term)
+        
+        # Randomize the remaining projects (excluding the new first one)
+        remaining_projects = self.projects[1:]
+        random.shuffle(remaining_projects)
+        self.projects = [self.projects[0]] + remaining_projects
     
     def clear_screen(self):
         os.system("cls" if os.name == "nt" else "clear")
@@ -108,6 +143,18 @@ class MoonDevRundown:
     def update_display(self):
         """🔄 Continuously update the display"""
         while self.should_update:
+            time_remaining = self.get_time_remaining()
+            
+            # Check if time just hit zero
+            if (self.last_time_remaining is not None and 
+                self.last_time_remaining > 0 and 
+                time_remaining == 0):
+                
+                # Play sound and set flag for auto-advance
+                self.play_sound()
+                self.auto_advance_flag = True
+                
+            self.last_time_remaining = time_remaining
             self.paint_rundown()
             time.sleep(1)
     
@@ -115,6 +162,7 @@ class MoonDevRundown:
         """🕐 Start timing the current project"""
         self.start_time = time.time()
         self.is_running = True
+        self.last_time_remaining = None
         
         # Stop previous timer thread if running
         if self.timer_thread and self.timer_thread.is_alive():
@@ -142,16 +190,50 @@ class MoonDevRundown:
         """🔄 Restart current project timer"""
         self.start_project_timer()
     
+    def get_input_with_timeout(self, prompt, timeout=0.1):
+        """Get input with timeout to allow checking auto-advance flag"""
+        if platform.system() == "Windows":
+            # Windows doesn't support select, so we'll use a simpler approach
+            import msvcrt
+            print(prompt, end='', flush=True)
+            
+            while True:
+                if self.auto_advance_flag:
+                    return "auto_advance"
+                
+                if msvcrt.kbhit():
+                    line = input()
+                    return line
+                
+                time.sleep(0.1)
+        else:
+            # Unix-like systems (macOS, Linux)
+            print(prompt, end='', flush=True)
+            
+            while True:
+                if self.auto_advance_flag:
+                    return "auto_advance"
+                
+                # Check if input is available
+                if select.select([sys.stdin], [], [], timeout)[0]:
+                    line = sys.stdin.readline().strip()
+                    return line
+                
+                time.sleep(0.1)
+    
     def run(self):
         """🏃 Main Moon Dev rundown loop"""
         # Start first project timer
         self.start_project_timer()
         
-        while self.current_idx < len(self.projects):
+        while True:
             try:
-                choice = input("\n🌙 Moon Dev command: ").strip().lower()
+                choice = self.get_input_with_timeout("\n🌙 Moon Dev command: ")
                 
-                if choice == "q":
+                if choice == "auto_advance":
+                    self.auto_advance_flag = False
+                    self.advance_project()
+                elif choice == "q":
                     break
                 elif choice == "r":
                     self.restart_timer()
@@ -192,9 +274,9 @@ def parse_single_input(user_input):
     if numbers:
         minutes = numbers[0]
     
-    # Use first word as project search
+    # Use all words as project search (joined together)
     if words:
-        project_search = words[0]
+        project_search = " ".join(words)
     
     return minutes, project_search
 
